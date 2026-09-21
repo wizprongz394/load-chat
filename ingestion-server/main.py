@@ -22,6 +22,7 @@ EMBED_MODEL        = "google/gemini-embedding-2"
 
 # ── Docling setup (initialised once at startup, models cached in container) ──
 pipeline_options = PdfPipelineOptions()
+pipeline_options.do_ocr = True
 pipeline_options.generate_picture_images = True
 pipeline_options.generate_table_images   = False
 pipeline_options.images_scale            = 2.0
