@@ -215,10 +215,11 @@ async def ingest_v3_folder(
     paths: str = Form("[]"),
     replace: bool = Form(True),
 ):
-    """Ingest a browser-selected OneNote export folder recursively.
+    """Ingest a browser-selected knowledge folder recursively.
 
     V3 uses the folder structure as knowledge identity and writes only to the
-    isolated documents_gemini_v3 table. It does not require Shopify tagging.
+    isolated documents_gemini_v3 table. It supports PDF, Markdown, and text
+    knowledge files without requiring Shopify tagging.
     """
     try:
         relative_paths = json.loads(paths)
@@ -229,37 +230,71 @@ async def ingest_v3_folder(
         raise HTTPException(400, "paths must contain one relative path per uploaded file")
 
     results = []
-    totals = {"files": 0, "pdfs": 0, "unsupported": 0, "chunks_saved": 0, "chunks_total": 0}
+    totals = {
+        "files": 0,
+        "pdfs": 0,
+        "text_files": 0,
+        "unsupported": 0,
+        "chunks_saved": 0,
+        "chunks_total": 0,
+    }
     unsupported = []
 
     for upload, raw_path in zip(files, relative_paths):
         relative_path = _safe_relative_path(str(raw_path))
         folder = _v3_folder_from_path(relative_path)
         filename = Path(relative_path).name
+        suffix = Path(filename).suffix.lower()
         totals["files"] += 1
 
-        if not filename.lower().endswith(".pdf"):
+        if suffix not in {".pdf", ".md", ".txt"}:
             totals["unsupported"] += 1
-            unsupported.append({"path": relative_path, "reason": "unsupported file type"})
+            unsupported.append({
+                "path": relative_path,
+                "reason": "unsupported file type",
+            })
             continue
 
-        totals["pdfs"] += 1
         source_path = relative_path
         source_scope = _v3_scope(folder)
         contents = await upload.read()
-        if not contents:
-            results.append({"source_path": source_path, "folder": folder, "status": "error", "error": "empty file"})
-            continue
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(contents)
-            tmp_path = Path(tmp.name)
+        if not contents:
+            results.append({
+                "source_path": source_path,
+                "folder": folder,
+                "status": "error",
+                "error": "empty file",
+            })
+            continue
 
         try:
             if replace:
                 delete_v3_source(source_path)
-            md = parse_pdf(tmp_path)
+
+            # PDF: use the existing Docling pipeline.
+            if suffix == ".pdf":
+                totals["pdfs"] += 1
+
+                with tempfile.NamedTemporaryFile(
+                    suffix=".pdf",
+                    delete=False,
+                ) as tmp:
+                    tmp.write(contents)
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    md = parse_pdf(tmp_path)
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+
+            # Markdown/text: use the content directly.
+            else:
+                totals["text_files"] += 1
+                md = contents.decode("utf-8", errors="replace")
+
             chunks = chunk_markdown(md)
+
             metadata_base = {
                 "source": filename,
                 "source_path": source_path,
@@ -270,9 +305,12 @@ async def ingest_v3_folder(
                 "content_type": "text",
                 "kb_version": "v3",
             }
+
             saved, errors = save_v3_chunks(chunks, metadata_base)
+
             totals["chunks_saved"] += saved
             totals["chunks_total"] += len(chunks)
+
             results.append({
                 "source_path": source_path,
                 "folder": folder,
@@ -281,13 +319,21 @@ async def ingest_v3_folder(
                 "errors": errors,
                 "status": "ok" if not errors else "partial",
             })
+
         except Exception as exc:
-            results.append({"source_path": source_path, "folder": folder, "status": "error", "error": str(exc)[:300]})
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            results.append({
+                "source_path": source_path,
+                "folder": folder,
+                "status": "error",
+                "error": str(exc)[:300],
+            })
 
-    return {"version": "v3", "summary": totals, "unsupported": unsupported, "files": results}
-
+    return {
+        "version": "v3",
+        "summary": totals,
+        "unsupported": unsupported,
+        "files": results,
+    }
 
 @app.get("/documents/v3")
 def list_v3_documents():
