@@ -16,7 +16,7 @@
     --link:#0070f3; --error:#ee0000; --brand:#d92b2b;
     --sans:'DM Sans', -apple-system, system-ui, sans-serif;
     --mono:'DM Mono', ui-monospace, monospace;
-  }
+        }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--canvas); color: var(--ink); font-family: var(--sans);
@@ -118,7 +118,7 @@
     /* When embedded as a widget, the full-screen iframe hides the launcher's
        close button, so show an in-chat close on mobile. */
     body.embedded .head .close { display: flex; }
-  }
+        }
 </style>
 </head>
 <body>
@@ -158,14 +158,14 @@
     return ((s || "").match(/[A-Za-z]{2,5}-?\d{2,4}(?:-[A-Za-z0-9]{1,8})*/g) || [])
       .map(function (t) { return t.toLowerCase().replace(/[^a-z0-9]/g, ""); })
       .filter(function (t) { return t.length >= 4; });
-  }
+        }
 
   function setStatus(state) {
     var s = el("status"), t = el("statusText"), a = el("headAvatar");
     if (state === "thinking") { s.classList.add("busy"); t.textContent = "Thinking…"; a.src = "Thinking_Momo.gif"; }
     else if (state === "typing") { s.classList.add("busy"); t.textContent = "Typing…"; a.src = "momo.gif"; }
     else { s.classList.remove("busy"); t.textContent = "Online · Load Controls Assistant"; a.src = "momo.gif"; }
-  }
+        }
 
   function addMessage(role) {
     var wrap = document.createElement("div");
@@ -176,7 +176,7 @@
     el("messages").appendChild(wrap);
     scrollDown();
     return wrap.querySelector(".bubble");
-  }
+        }
 
   function renderAnswer(bubble, full, meta, streaming) {
     var rendered = (typeof marked !== "undefined") ? marked.parse(full || "") : esc(full || "");
@@ -226,12 +226,12 @@
         html += '</div>';
       }
     }
-    bubble.innerHTML = html;
+          bubble.innerHTML = html;
     scrollDown();
-  }
+        }
 
   async function streamReply(bubble, payload) {
-    bubble.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+          bubble.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
     var full = "", meta = {}, started = false;
     try {
       var res = await fetch(API + "/chat", {
@@ -243,6 +243,22 @@
         bubble.innerHTML = '<span class="err">Error ' + res.status + ": " + esc(txt.slice(0, 160)) + "</span>";
         return { full: "" };
       }
+      var contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+      if (contentType.indexOf("application/json") !== -1) {
+        var data = await res.json();
+
+        if (data.error) {
+          bubble.innerHTML = '<span class="err">' + esc(data.error) + "</span>";
+          return { full: "" };
+        }
+
+        full = data.answer || "";
+        meta = data;
+
+        renderAnswer(bubble, full, meta, false);
+        return { full: full };
+}
       var reader = res.body.getReader(), dec = new TextDecoder(), buf = "";
       for (;;) {
         var r = await reader.read(); if (r.done) break;
@@ -262,7 +278,7 @@
       bubble.innerHTML = '<span class="err">Connection failed: ' + esc(String(e)) + "</span>";
       return { full: "" };
     }
-  }
+        }
 
   async function send(text) {
     if (busy) return;
@@ -280,7 +296,7 @@
 
     setStatus("idle");
     busy = false; el("send").disabled = false; el("input").focus();
-  }
+        }
 
   // Persist the conversation so it survives page navigation. localStorage is
   // shared across all pages/tabs of this (iframe) origin, so the chat "follows"
@@ -297,12 +313,12 @@
       else b.textContent = m.content;
     });
     return true;
-  }
+        }
 
   function welcome() {
     var b = addMessage("ai");
     renderAnswer(b, "Hi, I'm **Miss MoMo** — your Load Controls assistant. Ask me about our products, wiring, installation, or settings, and I'll help you find the right solution.", {}, false);
-  }
+        }
 
   el("composer").addEventListener("submit", function (e) { e.preventDefault(); var v = el("input").value; el("input").value = ""; send(v); });
   el("reset").addEventListener("click", function () { convo = []; try { localStorage.removeItem("mm-convo"); } catch (e) {} el("messages").innerHTML = ""; setStatus("idle"); welcome(); el("input").focus(); });
@@ -312,7 +328,7 @@
   if (window.parent && window.parent !== window) document.body.classList.add("embedded");
   el("closeBtn").addEventListener("click", function () {
     try { window.parent.postMessage({ type: "missmomo-close" }, "*"); } catch (e) {}
-  });
+        });
 
   if (!restoreConvo()) welcome();   // resume prior conversation across page navigations
   el("input").focus();
@@ -321,4 +337,5 @@
 </script>
 </body>
 </html>
+
 
