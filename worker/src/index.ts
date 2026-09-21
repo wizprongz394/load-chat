@@ -36,11 +36,16 @@ async function embedQuery(apiKey: string, text: string): Promise<number[]> {
       input: text,
     }),
   });
+
   if (!response.ok) {
     const err = await response.text();
     throw new Error(`OpenRouter embed error: ${response.status} ${err}`);
   }
-  const data = (await response.json()) as { data: { embedding: number[] }[] };
+
+  const data = (await response.json()) as {
+    data: { embedding: number[] }[];
+  };
+
   return data.data[0].embedding;
 }
 
@@ -50,7 +55,8 @@ async function retrieveChunks(
   supabaseKey: string,
   queryEmbedding: number[],
   rpcName: string,
-  topK = 5
+  topK: number,
+  matchThreshold: number
 ): Promise<{ content: string; source: string; similarity: number }[]> {
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${rpcName}`, {
     method: "POST",
@@ -61,14 +67,16 @@ async function retrieveChunks(
     },
     body: JSON.stringify({
       query_embedding: queryEmbedding,
-      match_threshold: 0.1,
+      match_threshold: matchThreshold,
       match_count: topK,
     }),
   });
 
   if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase retrieval failed: ${response.status} ${err}`);
+    const errorText = await response.text();
+    throw new Error(
+      `Supabase retrieval failed (${rpcName}): ${response.status} ${errorText}`
+    );
   }
 
   const rows = (await response.json()) as {
@@ -85,24 +93,36 @@ async function retrieveChunks(
 }
 
 let diagramCount = 0;
+
 function stripBase64ImagesTracked(text: string): string {
-  return text.replace(/!\[([^\]]*)\]\(data:image\/[^;]+;base64,[A-Za-z0-9+/=]+\)/g,
+  return text.replace(
+    /!\[([^\]]*)\]\(data:image\/[^;]+;base64,[A-Za-z0-9+/=]+\)/g,
     (_match, alt) => {
       diagramCount++;
-      return `\n[📷 SYSTEM: DIAGRAM/IMAGE ${diagramCount} AVAILABLE HERE${alt ? ' - ' + alt : ''}]\n`;
+      return `\n[📷 SYSTEM: DIAGRAM/IMAGE ${diagramCount} AVAILABLE HERE${
+        alt ? " - " + alt : ""
+      }]\n`;
     }
   );
 }
 
-// ── Generate answer using DeepSeek ──
+// ── Generate answer using Gemma via OpenRouter ──
 async function generateAnswer(
   apiKey: string,
   query: string,
   chunks: { content: string; source: string }[]
-): Promise<{ answer: string; inputTokens: number; outputTokens: number }> {
-  diagramCount = 0; // Reset for this request
+): Promise<{
+  answer: string;
+  inputTokens: number;
+  outputTokens: number;
+}> {
+  diagramCount = 0;
+
   const context = chunks
-    .map((c, i) => `[Source Document: ${c.source}]\n${stripBase64ImagesTracked(c.content)}`)
+    .map(
+      (c) =>
+        `[Source Document: ${c.source}]\n${stripBase64ImagesTracked(c.content)}`
+    )
     .join("\n\n---\n\n");
 
   const systemPrompt = `You are Miss MoMo, a professional technical assistant for Load Controls Inc. You are brilliant, helpful, and have a wonderfully witty and slightly sassy personality when pushed.
@@ -116,31 +136,37 @@ CORE RULES:
 
   const userMessage = `Context from documentation:\n\n${context}\n\n---\n\nUser Question: ${query}`;
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "google/gemma-4-26b-a4b-it",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      max_tokens: 1024,
-      temperature: 0.1,
-    }),
-  });
+  const response = await fetch(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "google/gemma-4-26b-a4b-it",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        max_tokens: 1024,
+        temperature: 0.1,
+      }),
+    }
+  );
 
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`DeepSeek API error: ${response.status} ${err}`);
+    throw new Error(`OpenRouter chat error: ${response.status} ${err}`);
   }
 
   const data = (await response.json()) as {
     choices: { message: { content: string } }[];
-    usage: { prompt_tokens: number; completion_tokens: number };
+    usage: {
+      prompt_tokens: number;
+      completion_tokens: number;
+    };
   };
 
   return {
@@ -151,19 +177,20 @@ CORE RULES:
 }
 
 // ── Shared chat handler ──
-async function handleChat(
-  request: Request,
-  env: Env
-): Promise<Response> {
+async function handleChat(request: Request, env: Env): Promise<Response> {
   const body = (await request.json()) as { query?: string };
   const query = body?.query?.trim();
 
   if (!query) {
-    return jsonResponse({ error: "Missing 'query' field in request body" }, 400);
+    return jsonResponse(
+      { error: "Missing 'query' field in request body" },
+      400
+    );
   }
 
   // 1. Embed the query via OpenRouter → Gemini Embedding 2 (3072d)
   let queryEmbedding: number[];
+
   try {
     queryEmbedding = await embedQuery(env.OPENROUTER_API_KEY, query);
     console.log("[Step 1] OpenRouter embed OK, dims:", queryEmbedding.length);
@@ -184,21 +211,24 @@ async function handleChat(
         env.SUPABASE_KEY,
         queryEmbedding,
         "match_documents_gemini",
-        5
+        5,
+        0.1
       ),
       retrieveChunks(
         env.SUPABASE_URL,
         env.SUPABASE_KEY,
         queryEmbedding,
         "match_documents_gemini_v3",
-        5
+        5,
+        0.1
       ),
     ]);
 
     console.log(
-      "[Step 2] Supabase retrieve OK:",
-      "legacy =", legacyChunks.length,
-      "v3 =", v3Chunks.length
+      "[Step 2] Supabase retrieve OK: legacy =",
+      legacyChunks.length,
+      "v3 =",
+      v3Chunks.length
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -211,15 +241,12 @@ async function handleChat(
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, 8);
 
-  console.log(
-    "[Step 2] Combined retrieval:",
-    chunks.length,
-    "chunks"
-  );
+  console.log("[Step 2] Combined retrieval:", chunks.length, "chunks");
 
   if (chunks.length === 0) {
     return jsonResponse({
-      answer: "I couldn't find any relevant information to answer your question. Please make sure documents have been ingested into the Gemini-powered knowledge base.",
+      answer:
+        "I couldn't find any relevant information to answer your question. Please make sure documents have been ingested into the Gemini-powered knowledge base.",
       sources: [],
       input_tokens: 0,
       output_tokens: 0,
@@ -228,18 +255,21 @@ async function handleChat(
   }
 
   // 3. Generate answer with Gemma 4 via OpenRouter
-  let answer: string, inputTokens: number, outputTokens: number;
+  let answer: string;
+  let inputTokens: number;
+  let outputTokens: number;
+
   try {
     ({ answer, inputTokens, outputTokens } = await generateAnswer(
       env.OPENROUTER_API_KEY,
       query,
       chunks
     ));
-    console.log("[Step 3] DeepSeek answer OK, tokens:", inputTokens, outputTokens);
+    console.log("[Step 3] answer OK, tokens:", inputTokens, outputTokens);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[Step 3 FAILED] DeepSeek error:", msg);
-    throw new Error(`DeepSeek failed: ${msg}`);
+    console.error("[Step 3 FAILED] Generation error:", msg);
+    throw new Error(`Generation failed: ${msg}`);
   }
 
   return jsonResponse({
@@ -258,11 +288,16 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: CORS_HEADERS });
+      return new Response(null, {
+        headers: CORS_HEADERS,
+      });
     }
 
     if (url.pathname === "/health") {
-      return jsonResponse({ status: "ok", timestamp: new Date().toISOString() });
+      return jsonResponse({
+        status: "ok",
+        timestamp: new Date().toISOString(),
+      });
     }
 
     if (url.pathname === "/chat" && request.method === "POST") {
