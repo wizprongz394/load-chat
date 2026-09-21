@@ -23,8 +23,3 @@ as $$
   order by d.embedding <=> query_embedding
   limit match_count;
 $$;
-
--- Vector index for V3 cosine similarity search.
-create index if not exists documents_gemini_v3_embedding_idx
-on public.documents_gemini_v3
-using hnsw (embedding vector_cosine_ops);
