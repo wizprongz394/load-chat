@@ -14,3 +14,7 @@ __pycache__/
 
 # Mac
 .DS_Store
+
+# Local environment / Vercel
+.env.local
+.vercel/
